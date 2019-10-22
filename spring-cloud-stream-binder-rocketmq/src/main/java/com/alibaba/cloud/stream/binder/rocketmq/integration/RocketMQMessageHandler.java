@@ -1,11 +1,11 @@
 /*
- * Copyright (C) 2018 the original author or authors.
+ * Copyright 2013-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ *      https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,8 +17,14 @@
 package com.alibaba.cloud.stream.binder.rocketmq.integration;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
+import com.alibaba.cloud.stream.binder.rocketmq.RocketMQBinderConstants;
+import com.alibaba.cloud.stream.binder.rocketmq.metrics.Instrumentation;
+import com.alibaba.cloud.stream.binder.rocketmq.metrics.InstrumentationManager;
+import com.alibaba.cloud.stream.binder.rocketmq.properties.RocketMQProducerProperties;
+import com.alibaba.cloud.stream.binder.rocketmq.support.RocketMQHeaderMapper;
 import org.apache.rocketmq.client.exception.MQClientException;
 import org.apache.rocketmq.client.producer.SendCallback;
 import org.apache.rocketmq.client.producer.SendResult;
@@ -29,6 +35,7 @@ import org.apache.rocketmq.spring.core.RocketMQTemplate;
 import org.apache.rocketmq.spring.support.RocketMQHeaders;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 import org.springframework.cloud.stream.binder.BinderHeaders;
 import org.springframework.cloud.stream.binder.ExtendedProducerProperties;
 import org.springframework.cloud.stream.binding.MessageConverterConfigurer;
@@ -37,16 +44,12 @@ import org.springframework.integration.handler.AbstractMessageHandler;
 import org.springframework.integration.support.DefaultErrorMessageStrategy;
 import org.springframework.integration.support.ErrorMessageStrategy;
 import org.springframework.integration.support.MessageBuilder;
+import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageChannel;
 import org.springframework.messaging.MessagingException;
 import org.springframework.messaging.support.ErrorMessage;
 import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
-
-import com.alibaba.cloud.stream.binder.rocketmq.RocketMQBinderConstants;
-import com.alibaba.cloud.stream.binder.rocketmq.metrics.Instrumentation;
-import com.alibaba.cloud.stream.binder.rocketmq.metrics.InstrumentationManager;
-import com.alibaba.cloud.stream.binder.rocketmq.properties.RocketMQProducerProperties;
 
 /**
  * @author <a href="mailto:fangjian0423@gmail.com">Jim</a>
@@ -61,6 +64,8 @@ public class RocketMQMessageHandler extends AbstractMessageHandler implements Li
 	private MessageChannel sendFailureChannel;
 
 	private final RocketMQTemplate rocketMQTemplate;
+
+	private RocketMQHeaderMapper headerMapper;
 
 	private final Boolean transactional;
 
@@ -146,9 +151,15 @@ public class RocketMQMessageHandler extends AbstractMessageHandler implements Li
 	}
 
 	@Override
-	protected void handleMessageInternal(org.springframework.messaging.Message<?> message)
-			throws Exception {
+	protected void handleMessageInternal(
+			org.springframework.messaging.Message<?> message) {
 		try {
+			// issue 737 fix
+			Map<String, String> jsonHeaders = headerMapper
+					.fromHeaders(message.getHeaders());
+			message = org.springframework.messaging.support.MessageBuilder
+					.fromMessage(message).copyHeaders(jsonHeaders).build();
+
 			final StringBuilder topicWithTags = new StringBuilder(destination);
 			String tags = Optional
 					.ofNullable(message.getHeaders().get(RocketMQHeaders.TAGS)).orElse("")
@@ -156,6 +167,7 @@ public class RocketMQMessageHandler extends AbstractMessageHandler implements Li
 			if (!StringUtils.isEmpty(tags)) {
 				topicWithTags.append(":").append(tags);
 			}
+
 			SendResult sendRes = null;
 			if (transactional) {
 				sendRes = rocketMQTemplate.sendMessageInTransaction(groupName,
@@ -195,6 +207,7 @@ public class RocketMQMessageHandler extends AbstractMessageHandler implements Li
 					log.debug("sync send to topic " + topicWithTags + " " + sendRes);
 				}
 				else {
+					Message<?> finalMessage = message;
 					SendCallback sendCallback = new SendCallback() {
 						@Override
 						public void onSuccess(SendResult sendResult) {
@@ -210,7 +223,7 @@ public class RocketMQMessageHandler extends AbstractMessageHandler implements Li
 								getSendFailureChannel().send(
 										RocketMQMessageHandler.this.errorMessageStrategy
 												.buildErrorMessage(new MessagingException(
-														message, e), null));
+														finalMessage, e), null));
 							}
 						}
 					};
@@ -277,4 +290,13 @@ public class RocketMQMessageHandler extends AbstractMessageHandler implements Li
 	public void setSync(boolean sync) {
 		this.sync = sync;
 	}
+
+	public RocketMQHeaderMapper getHeaderMapper() {
+		return headerMapper;
+	}
+
+	public void setHeaderMapper(RocketMQHeaderMapper headerMapper) {
+		this.headerMapper = headerMapper;
+	}
+
 }
